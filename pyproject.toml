@@ -1,0 +1,25 @@
+[project]
+name = "agentic-rag-chatbot"
+version = "0.1.0"
+description = "Next.js and FastAPI document research with LangGraph, Chroma, and Groq"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "python-multipart>=0.0.18,<1",
+  "chromadb>=1.0,<2",
+  "groq>=0.31,<1",
+  "langgraph>=1,<2",
+  "pydantic>=2,<3",
+  "pypdf>=6,<7",
+  "python-docx>=1.2,<2",
+  "python-dotenv>=1.1,<2",
+  "tokenizers>=0.20,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "reportlab>=4,<5", "httpx>=0.28,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
