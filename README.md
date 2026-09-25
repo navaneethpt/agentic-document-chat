@@ -74,6 +74,32 @@ closed after it is read. Extracted text and vectors stay in memory.
 The graph is `planner → retrieve → validate → generate`, with a feedback edge from
 validation to planning. It allows 3 rounds, 3 searches per round, 3 hits per search,
 and 10 unique chunks. The planner resolves follow-ups from the last 5 exchanges.
+
+```mermaid
+flowchart LR
+    Q[User question] --> P[Planner agent]
+    H[Recent conversation] --> P
+    F[Validator feedback] --> P
+
+    P -->|Up to 3 focused queries\nand evidence goals| R[Deterministic retriever]
+    L[(Current session's\nChroma library)] --> R
+    R --> E[Deduplicated evidence\nUp to 10 chunks]
+    E --> V[Evidence validator agent]
+    P -. Current plan .-> V
+
+    V -->|Sufficient evidence\nRounds 1 or 2| G[Generator agent]
+    V -->|Needs more evidence\nRound below 3| F
+    V -->|Round 3 and confidence >= 50%\nEvidence exists| G
+    V -->|No evidence, confidence below 50%,\nor budget exhausted| U[Ask user to upload\nmissing documents or sections]
+
+    E --> G
+    G -->|Grounded answer with\nchecked citations| A[Final answer]
+```
+
+The planner and validator only propose and assess work. The retriever is deterministic:
+it can search only the current browser session's Chroma collection, and the generator
+receives only the accumulated evidence that passed the graph's routing checks.
+
 Structured replies are validated with Pydantic and get one repair attempt. The
 first two validation attempts require a `sufficient` decision. On the third,
 confidence of at least 0.5 allows generation even when some evidence is missing;
