@@ -7,7 +7,9 @@ __pycache__/
 frontend/node_modules/
 frontend/.next/
 frontend/.next-e2e/
+frontend/out/
 frontend/test-results/
 frontend/playwright-report/
 frontend/*.tsbuildinfo
+.data/
 :memory:.ses

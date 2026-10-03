@@ -6,12 +6,13 @@ export type Trace = {
   confidence?: number; accepted?: boolean; acceptance_reason?: string;
   searches?: { query: string; purpose: string; new_sources?: number }[];
 };
-export type Message = { id: string; role: "user" | "assistant"; content: string; sources: Source[]; trace: Trace[] };
+export type WorkflowRef = { id: string; name: string; version: number };
+export type Message = { id: string; role: "user" | "assistant"; content: string; sources: Source[]; trace: Trace[]; workflow?: WorkflowRef };
 export type Snapshot = {
   id: string; healthy: boolean;
   documents: { id: string; filename: string; chunks: number }[];
   messages: Message[];
-  operation: null | { id: string; kind: string; status: string; question: string; events: Trace[]; error: string | null };
+  operation: null | { id: string; kind: string; status: string; question: string; events: Trace[]; error: string | null; workflow?: WorkflowRef };
 };
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
@@ -61,10 +62,10 @@ export async function readEvents(body: ReadableStream<Uint8Array>, receive: (eve
     if (!terminal) throw new Error("Connection interrupted. Checking research status…");
   } finally { reader.releaseLock(); }
 }
-export async function research(session: string, question: string, receive: (event: StreamEvent) => void) {
+export async function research(session: string, question: string, receive: (event: StreamEvent) => void, workflowId = "default") {
   const response = await fetch("/api/chat", {
     method: "POST", headers: { "Content-Type": "application/json", "X-Session-ID": session },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, workflow_id: workflowId }),
   });
   await check(response);
   if (!response.body) throw new Error("The research stream was unavailable.");

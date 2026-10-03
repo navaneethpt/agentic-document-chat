@@ -116,3 +116,49 @@ test("third-attempt 50 percent acceptance is visible in research", async ({ page
   await expect(page.locator(".right-panel")).toContainText("Validator confidence: 50%");
   await expect(page.locator(".right-panel")).toContainText("Round 3");
 });
+
+test("workflow builder saves and activates settings used by research", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await upload(page);
+  await page.locator(".topbar").getByRole("button", { name: "Configure agents" }).click();
+  const builder = page.getByRole("dialog", { name: "Configure agents" });
+  await expect(builder).toBeVisible();
+  await expect(builder).toContainText("Document retrieval");
+  await expect(builder).toContainText("agent");
+  await expect(builder).toContainText("tool");
+  await builder.getByRole("textbox", { name: "Workflow name" }).fill("One pass research");
+  await builder.getByRole("button", { name: /validate.*Evidence validator/i }).click();
+  await builder.getByLabel("Max Rounds").fill("1");
+  await builder.getByLabel("Final Confidence").fill("0.9");
+  await page.screenshot({ path: "test-results/workflow-builder.png", fullPage: true });
+  await builder.getByRole("button", { name: "Save new workflow and use" }).click();
+  await expect(builder).toContainText("Saved version 1");
+  await page.getByRole("button", { name: "Close workflow builder" }).click();
+  await expect(page.locator(".active-workflow")).toContainText("One pass research · v1");
+  await ask(page, "Give a partial answer about launch");
+  await expect(page.locator(".message.assistant")).toContainText("Please upload");
+  await expect(page.locator(".right-panel")).toContainText("Round 1");
+  await expect(page.locator(".right-panel")).not.toContainText("Round 3");
+  await page.reload();
+  await expect(page.locator(".active-workflow")).toContainText("One pass research · v1");
+});
+
+test("agent guide explains the default flow and opens configuration", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await expect(page.getByText("Make the research agents work your way.")).toBeVisible();
+  await page.getByRole("link", { name: "How the agents work" }).click();
+  await expect(page).toHaveURL(/\/agents\/$/);
+  await expect(page.getByRole("heading", { name: "How Folio’s agents work together" })).toBeVisible();
+  await expect(page.locator(".guide-node")).toHaveCount(5);
+  await expect(page.locator(".guide-flow")).toContainText("Search again");
+  await expect(page.locator(".guide-panel").first()).toContainText("3 rounds");
+  await page.screenshot({ path: "test-results/agent-guide.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "How Folio’s agents work together" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  await page.screenshot({ path: "test-results/agent-guide-mobile.png", fullPage: true });
+  await page.getByRole("link", { name: "Configure agents for your task" }).click();
+  await expect(page.getByRole("dialog", { name: "Configure agents" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Configure agents" })).toContainText("The default is a starting point");
+});

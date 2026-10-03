@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUp, BookOpen, Check, ChevronRight, FileText, FlaskConical, FolderOpen, Layers, LoaderCircle, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, BookOpen, Check, ChevronRight, FileText, FlaskConical, FolderOpen, Layers, LoaderCircle, Plus, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { api, ApiError, Message, research, Snapshot, Trace } from "../lib/api";
+import { SavedWorkflow } from "../lib/workflows";
+import WorkflowBuilder from "./workflow-builder";
 
 const SESSION_KEY = "folio-session";
+const WORKFLOW_KEY = "folio-workflow";
 let creating: Promise<string> | null = null;
 async function getSession() {
   const saved = sessionStorage.getItem(SESSION_KEY);
@@ -17,7 +20,7 @@ async function getSession() {
 }
 const stageNames: Record<string, string> = { planner: "Planning searches", retrieve: "Searching documents", validate: "Checking evidence", generate: "Preparing answer", need_upload: "More evidence needed" };
 const completedNames: Record<string, string> = { planner: "Search plan ready", retrieve: "Retrieval complete", validate: "Evidence checked", generate: "Answer ready", need_upload: "More evidence needed", search: "Search complete" };
-function label(event: Trace) { return event.node ? stageNames[event.node] : completedNames[event.event] || event.event; }
+function label(event: Trace) { return event.node ? stageNames[event.node] || event.node : completedNames[event.event] || event.event; }
 
 function ResearchTimeline({ events }: { events: Trace[] }) {
   return <ol className="timeline">{events.map((event, index) => <li key={index}>
@@ -39,6 +42,8 @@ export default function Workspace() {
   const [session, setSession] = useState<string>();
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [configured, setConfigured] = useState(false);
+  const [activeWorkflow, setActiveWorkflow] = useState<SavedWorkflow>();
+  const [workflowBuilderOpen, setWorkflowBuilderOpen] = useState(false);
   const [error, setError] = useState("");
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -80,8 +85,13 @@ export default function Workspace() {
   const initialize = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const health = await api<{ answering_configured: boolean }>("/health");
+      const [health, workflows] = await Promise.all([
+        api<{ answering_configured: boolean }>("/health"), api<SavedWorkflow[]>("/workflows"),
+      ]);
       setConfigured(health.answering_configured);
+      const chosen = workflows.find(item => item.id === sessionStorage.getItem(WORKFLOW_KEY))
+        || workflows.find(item => item.id === "default");
+      setActiveWorkflow(chosen);
       const id = await getSession(); setSession(id);
       const state = await refresh(id, true);
       setSelected(state.messages.filter(m => m.role === "assistant").at(-1)?.id);
@@ -90,6 +100,13 @@ export default function Workspace() {
   }, [handleError, refresh]);
 
   useEffect(() => { void initialize(); }, [initialize]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("configure") !== "agents") return;
+    setWorkflowBuilderOpen(true);
+    params.delete("configure");
+    window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}${window.location.hash}`);
+  }, []);
   useEffect(() => {
     if (!session || snapshot?.operation?.status !== "running" || localBusy || expired) return;
     let cancelled = false;
@@ -157,7 +174,7 @@ export default function Workspace() {
         if (event === "progress") setEvents(items => [...items, data as Trace]);
         if (event === "answer") { setSelected((data as Message).id); setQuestion(""); }
         if (event === "error") { failed = true; setError((data as { detail: string }).detail); }
-      });
+      }, activeWorkflow?.id || "default");
     } catch (reason) { failed = true; handleError(reason); }
     finally {
       try {
@@ -198,19 +215,28 @@ export default function Workspace() {
   </>;
 
   return <div className="workspace">
-    <header className="topbar"><a className="brand" href="/"><span className="brand-mark"><Layers size={20} /></span>folio<span className="brand-divider" /> <small>Document research</small></a><div className="topbar-actions"><span className="session-badge"><span /> Temporary workspace</span><button className="mobile-documents icon-button" aria-label="Open documents" onClick={() => setDrawer("documents")}><FolderOpen size={20} /></button><button className="mobile-research icon-button" aria-label="Open research" onClick={() => setDrawer("research")}><FlaskConical size={20} /></button></div></header>
+    <header className="topbar"><a className="brand" href="/"><span className="brand-mark"><Layers size={20} /></span>folio<span className="brand-divider" /> <small>Document research</small></a><div className="topbar-actions"><span className="session-badge"><span /> Temporary workspace</span><button className="workflow-open" aria-label="Configure agents" onClick={() => setWorkflowBuilderOpen(true)}><Settings2 size={16} /><span className="workflow-full-label">Configure agents</span><span className="workflow-short-label">Agents</span></button><button className="mobile-documents icon-button" aria-label="Open documents" onClick={() => setDrawer("documents")}><FolderOpen size={20} /></button><button className="mobile-research icon-button" aria-label="Open research" onClick={() => setDrawer("research")}><FlaskConical size={20} /></button></div></header>
     <aside className="left-panel">{documents}</aside>
-    <main className="chat-panel"><div className="chat-header"><div><span className="eyebrow">YOUR RESEARCH SPACE</span><h1>Ask. Explore. Understand.</h1></div><span className="grounded"><BookOpen size={14} /> Grounded in your files</span></div>
+    <main className="chat-panel"><div className="chat-header"><div><span className="eyebrow">YOUR RESEARCH SPACE</span><h1>Ask. Explore. Understand.</h1><small className="active-workflow">Workflow: {activeWorkflow?.name || "Default research"}{activeWorkflow ? ` · v${activeWorkflow.version}` : ""}</small></div><span className="grounded"><BookOpen size={14} /> Grounded in your files</span></div>
+      <section className="agent-callout" aria-label="Configurable agents">
+        <span className="agent-callout-icon"><Settings2 size={18} /></span>
+        <div className="agent-callout-copy"><strong>Make the research agents work your way.</strong><p>Current: {activeWorkflow?.name || "Default research"}{activeWorkflow ? ` · version ${activeWorkflow.version}` : ""}. The default plans searches, retrieves your documents, checks evidence, and writes a cited answer. Configure their settings and connections for your task.</p></div>
+        <div className="agent-callout-actions"><a href="/agents/">How the agents work <ChevronRight size={14} /></a><button onClick={() => setWorkflowBuilderOpen(true)}>Configure agents</button></div>
+      </section>
       {error && <div className="alert" role="alert">{error}<button onClick={expired ? reset : initialize} disabled={localBusy}>{expired ? "Start new session" : "Reconnect"}</button></div>}
       {!loading && snapshot && !configured && <div className="alert">Answering is not configured. Set GROQ_API_KEY in the backend .env and restart. You can still upload documents.</div>}
       {snapshot && !snapshot.healthy && <div className="alert">The document library needs to be cleared before continuing.</div>}
       <div className="conversation">
-        {loading ? <div className="welcome"><LoaderCircle className="spin" /><p>Opening your workspace…</p></div> : !snapshot?.messages.length && !pending ? <div className="welcome"><div className="welcome-symbol"><BookOpen size={30} /></div><span className="eyebrow">LESS SEARCHING. MORE UNDERSTANDING.</span><h2>Your documents,<br /><em>a clearer picture.</em></h2><p>Bring your files. Ask a question. Follow the evidence<br className="desktop-break" /> as your research assistant connects the dots.</p><div className="suggestions">{["Summarize the key points", "Compare the agreements", "Find the important dates"].map(text => <button key={text} onClick={() => setQuestion(text)}><Search size={14} />{text}<ChevronRight size={14} /></button>)}</div><small><span className="step-badge">1</span> Add documents <span className="step-line" /> <span className="step-badge">2</span> Start a conversation</small></div> : snapshot?.messages.map(message => <article key={message.id} className={`message ${message.role}`}><div className="message-author">{message.role === "assistant" ? <><span className="mini-mark"><Layers size={13} /></span> Folio</> : "You"}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => href?.startsWith("#source-") ? <button className="citation" aria-label={`Source ${href.slice(8)}`} onClick={() => inspect(message, Number(href.slice(8)))}>{children}</button> : <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{message.content.replace(/\[(\d+)\]/g, (match, number) => message.sources.some(source => source.number === Number(number)) ? `[${number}](#source-${number})` : match)}</ReactMarkdown></div>{message.role === "assistant" && <button className="inspect-button" onClick={() => inspect(message)}><FlaskConical size={13} /> View research <span>· {message.sources.length} sources</span><ChevronRight size={12} /></button>}</article>)}
+        {loading ? <div className="welcome"><LoaderCircle className="spin" /><p>Opening your workspace…</p></div> : !snapshot?.messages.length && !pending ? <div className="welcome"><div className="welcome-symbol"><BookOpen size={30} /></div><span className="eyebrow">LESS SEARCHING. MORE UNDERSTANDING.</span><h2>Your documents,<br /><em>a clearer picture.</em></h2><p>Bring your files. Ask a question. Follow the evidence<br className="desktop-break" /> as your research assistant connects the dots.</p><div className="suggestions">{["Summarize the key points", "Compare the agreements", "Find the important dates"].map(text => <button key={text} onClick={() => setQuestion(text)}><Search size={14} />{text}<ChevronRight size={14} /></button>)}</div><small><span className="step-badge">1</span> Add documents <span className="step-line" /> <span className="step-badge">2</span> Start a conversation</small></div> : snapshot?.messages.map(message => <article key={message.id} className={`message ${message.role}`}><div className="message-author">{message.role === "assistant" ? <><span className="mini-mark"><Layers size={13} /></span> Folio {message.workflow && <small>· {message.workflow.name} v{message.workflow.version}</small>}</> : "You"}</div><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => href?.startsWith("#source-") ? <button className="citation" aria-label={`Source ${href.slice(8)}`} onClick={() => inspect(message, Number(href.slice(8)))}>{children}</button> : <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{message.content.replace(/\[(\d+)\]/g, (match, number) => message.sources.some(source => source.number === Number(number)) ? `[${number}](#source-${number})` : match)}</ReactMarkdown></div>{message.role === "assistant" && <button className="inspect-button" onClick={() => inspect(message)}><FlaskConical size={13} /> View research <span>· {message.sources.length} sources</span><ChevronRight size={12} /></button>}</article>)}
         {pending && <><article className="message user"><div className="message-author">You</div><p>{pending}</p></article><div className="researching" role="status"><LoaderCircle className="spin" size={16} />{runningEvent ? label(runningEvent) : "Starting research…"}</div></>}
         <div ref={end} />
       </div>
       <div className="composer-area"><form className="composer" onSubmit={event => { event.preventDefault(); void send(); }}><textarea aria-label="Ask about your documents" placeholder="What would you like to understand?" rows={2} maxLength={2000} value={question} disabled={busy || expired} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (configured && snapshot?.healthy && snapshot.documents.length) void send(); } }} /><div className="composer-bottom"><span><FileText size={13} />{snapshot?.documents.length || 0} documents in context</span><button className="send-button" aria-label="Send question" disabled={busy || !question.trim() || !configured || !snapshot?.healthy || !snapshot.documents.length || expired}><ArrowUp size={18} /></button></div></form><p>Answers are based on your documents. Check sources for important decisions.</p></div>
     </main><aside className="right-panel">{evidence}</aside>
     <dialog ref={dialog} className="drawer" aria-label={drawer === "documents" ? "Documents" : "Evidence"} onCancel={() => setDrawer(null)} onClick={event => { if (event.target === event.currentTarget) setDrawer(null); }}>{drawer && <div className="drawer-inner"><button className="drawer-close icon-button" aria-label="Close panel" onClick={() => setDrawer(null)}><X /></button>{drawer === "documents" ? documents : evidence}</div>}</dialog>
+    <WorkflowBuilder open={workflowBuilderOpen} activeId={activeWorkflow?.id || "default"}
+      onClose={() => setWorkflowBuilderOpen(false)} onActivate={saved => {
+        setActiveWorkflow(saved); sessionStorage.setItem(WORKFLOW_KEY, saved.id);
+      }} />
   </div>;
 }

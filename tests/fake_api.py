@@ -1,5 +1,7 @@
 """Offline browser-test server. Never used by the normal API entry point."""
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -49,7 +51,8 @@ def model():
     return client
 
 
-app = create_app(runtime, model)
+workflow_directory = TemporaryDirectory(prefix="folio-browser-tests-")
+app = create_app(runtime, model, workflow_db_path=Path(workflow_directory.name) / "workflows.sqlite3")
 
 
 @app.post("/test/expire")

@@ -86,7 +86,7 @@ class SessionManager:
                 "operation": deepcopy(library.latest_operation),
             }
 
-    def begin(self, session_id: str, kind: str, question: str = "") -> Library:
+    def begin(self, session_id: str, kind: str, question: str = "", workflow: dict | None = None) -> Library:
         """Reserve before dispatching work; concurrent requests fail rather than queue."""
         with self._lock:
             library = self._existing(session_id)
@@ -95,7 +95,7 @@ class SessionManager:
             library.active = 1
             library.latest_operation = {
                 "id": uuid4().hex, "kind": kind, "status": "running",
-                "question": question, "events": [], "error": None,
+                "question": question, "events": [], "error": None, "workflow": workflow,
             }
             return library
 

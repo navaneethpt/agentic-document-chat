@@ -11,6 +11,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.datastructures import UploadFile
@@ -20,6 +21,8 @@ from .documents import DocumentError, MAX_FILE_BYTES
 from .indexing import ingest
 from .runtime import Runtime
 from .sessions import SessionBusy, SessionExpired
+from .workflows import (WorkflowConflict, WorkflowDraft, WorkflowError, WorkflowNotFound,
+                        WorkflowStore, load_extensions, node_catalog, validate_workflow)
 
 
 class BodyTooLarge(Exception):
@@ -53,6 +56,7 @@ class UploadLimit:
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2000)
+    workflow_id: str = Field(default="default", min_length=1, max_length=64)
 
     @field_validator("question")
     @classmethod
@@ -62,12 +66,27 @@ class ChatRequest(BaseModel):
         return value.strip()
 
 
-def create_app(runtime_factory=Runtime, client_factory=None) -> FastAPI:
+class WorkflowUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: int = Field(ge=1)
+    workflow: WorkflowDraft
+
+
+def create_app(runtime_factory=Runtime, client_factory=None, frontend_dir: Path | None = None,
+               workflow_db_path: Path | None = None) -> FastAPI:
+    static_dir = frontend_dir or Path(__file__).resolve().parents[1] / "frontend" / "out"
+
     @asynccontextmanager
     async def lifespan(app):
         load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+        load_extensions()
         app.state.runtime = runtime_factory()
+        database = workflow_db_path or Path(os.getenv(
+            "FOLIO_WORKFLOWS_DB", str(Path(__file__).resolve().parents[1] / ".data" / "workflows.sqlite3")))
+        app.state.workflows = WorkflowStore(database)
         app.state.tasks = set()
+        if static_dir.is_dir():
+            app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
         yield
         if app.state.tasks:
             await asyncio.gather(*app.state.tasks, return_exceptions=True)
@@ -83,6 +102,18 @@ def create_app(runtime_factory=Runtime, client_factory=None) -> FastAPI:
     @api.exception_handler(SessionBusy)
     async def busy(request, error):
         return JSONResponse({"detail": str(error)}, status_code=409)
+
+    @api.exception_handler(WorkflowNotFound)
+    async def missing_workflow(request, error):
+        return JSONResponse({"detail": "Workflow not found."}, status_code=404)
+
+    @api.exception_handler(WorkflowConflict)
+    async def workflow_conflict(request, error):
+        return JSONResponse({"detail": str(error)}, status_code=409)
+
+    @api.exception_handler(WorkflowError)
+    async def invalid_workflow(request, error):
+        return JSONResponse({"detail": str(error)}, status_code=422)
 
     def manager():
         return api.state.runtime.manager
@@ -104,6 +135,30 @@ def create_app(runtime_factory=Runtime, client_factory=None) -> FastAPI:
     @api.get("/api/health")
     def health():
         return {"status": "ok", "answering_configured": configured()}
+
+    @api.get("/api/node-types")
+    def catalog():
+        return node_catalog()
+
+    @api.get("/api/workflows")
+    def workflows():
+        return api.state.workflows.list()
+
+    @api.get("/api/workflows/{workflow_id}")
+    def get_workflow(workflow_id: str):
+        return api.state.workflows.get(workflow_id)
+
+    @api.post("/api/workflows", status_code=201)
+    def create_workflow(draft: WorkflowDraft):
+        return api.state.workflows.create(draft)
+
+    @api.put("/api/workflows/{workflow_id}")
+    def update_workflow(workflow_id: str, request: WorkflowUpdate):
+        return api.state.workflows.update(workflow_id, request.workflow, request.version)
+
+    @api.delete("/api/workflows/{workflow_id}", status_code=204)
+    def delete_workflow(workflow_id: str):
+        api.state.workflows.delete(workflow_id)
 
     @api.post("/api/sessions", status_code=201)
     def create_session():
@@ -159,13 +214,17 @@ def create_app(runtime_factory=Runtime, client_factory=None) -> FastAPI:
     async def chat(body: ChatRequest, x_session_id: str | None = Header(default=None)):
         session_id = identity(x_session_id)
         snapshot = manager().snapshot(session_id)
+        workflow = api.state.workflows.get(body.workflow_id)
+        validate_workflow(workflow)
         if not configured():
             raise HTTPException(503, "Set GROQ_API_KEY in the backend .env and restart the API.")
         if not snapshot["healthy"]:
             raise HTTPException(409, "The document library needs to be cleared before continuing.")
         if not snapshot["documents"]:
             raise HTTPException(409, "Upload and process documents before asking a question.")
-        library = manager().begin(session_id, "chat", body.question)
+        library = manager().begin(session_id, "chat", body.question, workflow={
+            "id": workflow.id, "name": workflow.name, "version": workflow.version,
+        })
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue(maxsize=128)
         connected = True
@@ -188,10 +247,12 @@ def create_app(runtime_factory=Runtime, client_factory=None) -> FastAPI:
                 factory = client_factory or (lambda: Groq(
                     api_key=os.environ["GROQ_API_KEY"], timeout=45.0, max_retries=1))
                 with library.lock, factory() as client:
-                    answer = answer_question(library, body.question, library.messages[-10:], client, on_event=progress)
+                    answer = answer_question(library, body.question, library.messages[-10:], client,
+                                             on_event=progress, workflow=workflow)
                 result = {"id": uuid4().hex, "role": "assistant", "content": answer.text,
                           "sources": [asdict(source) for source in answer.sources],
-                          "trace": list(library.latest_operation["events"])}
+                          "trace": list(library.latest_operation["events"]),
+                          "workflow": {"id": workflow.id, "name": workflow.name, "version": workflow.version}}
                 messages = [{"id": uuid4().hex, "role": "user", "content": body.question,
                              "sources": [], "trace": []}, result]
             except ChatError as exc:
