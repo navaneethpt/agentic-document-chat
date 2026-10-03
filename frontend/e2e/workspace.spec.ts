@@ -31,7 +31,7 @@ test("upload, cited answer, historical evidence, refresh and clear", async ({ pa
   await page.screenshot({ path: "test-results/workspace-desktop.png", fullPage: true });
   page.on("dialog", dialog => dialog.accept());
   await page.getByRole("button", { name: "Clear session" }).click();
-  await expect(page.getByText("Your documents,", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Your documents,/ })).toBeVisible();
   await expect(page.locator(".document")).toHaveCount(0);
 });
 

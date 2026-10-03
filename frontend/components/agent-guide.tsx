@@ -1,0 +1,106 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, GitBranch, Layers, Settings2 } from "lucide-react";
+import { api } from "../lib/api";
+import { NodeType, SavedWorkflow } from "../lib/workflows";
+
+const explanations: Record<string, string> = {
+  planner: "Turns your question and recent conversation into focused search queries. Validator feedback can send it back to plan another search.",
+  retrieve: "Searches only the documents uploaded to your current session. It gathers unique passages and keeps their file and location details.",
+  validate: "Checks whether those passages cover the material parts of the question. It decides whether to answer, search again, or request missing documents.",
+  generate: "Writes from the gathered passages and cites their source numbers. Folio checks that cited numbers point to available passages.",
+  need_upload: "Explains what evidence is missing when the workflow cannot support a reliable answer.",
+};
+
+const outcomeLabels: Record<string, string> = {
+  next: "Continue", sufficient: "Enough evidence", retry: "Search again", needs_upload: "Need documents",
+};
+
+export default function AgentGuide() {
+  const [types, setTypes] = useState<NodeType[]>([]);
+  const [defaultFlow, setDefaultFlow] = useState<SavedWorkflow>();
+  const [activeFlow, setActiveFlow] = useState<SavedWorkflow>();
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api<NodeType[]>("/node-types"), api<SavedWorkflow>("/workflows/default")])
+      .then(async ([catalog, workflow]) => {
+        if (cancelled) return;
+        setTypes(catalog); setDefaultFlow(workflow);
+        const activeId = sessionStorage.getItem("folio-workflow");
+        if (activeId && activeId !== "default") {
+          try {
+            const active = await api<SavedWorkflow>(`/workflows/${activeId}`);
+            if (!cancelled) setActiveFlow(active);
+          } catch { if (!cancelled) setActiveFlow(workflow); }
+        } else setActiveFlow(workflow);
+      })
+      .catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load the agent configuration."); });
+    return () => { cancelled = true; };
+  }, []);
+
+  function label(type: string) { return types.find(item => item.type === type)?.label || type; }
+  function setting(type: string, key: string) {
+    const node = defaultFlow?.nodes.find(item => item.type === type);
+    const definition = types.find(item => item.type === type);
+    return node?.config[key] ?? definition?.config_schema.properties?.[key]?.default ?? "—";
+  }
+
+  return <main className="agent-guide">
+    <header className="guide-topbar"><a className="guide-brand" href="/"><span className="brand-mark"><Layers size={20} /></span>folio</a>
+      <a className="guide-return" href="/"><ArrowLeft size={15} /> Back to research</a></header>
+    <div className="guide-content">
+      <section className="guide-hero"><span className="eyebrow">CONFIGURABLE DOCUMENT RESEARCH</span>
+        <h1>How Folio’s agents work together</h1>
+        <p>Your documents become a temporary searchable library. A saved workflow then decides which agents and tools run, how they connect, and when there is enough evidence to answer.</p>
+        <div className="guide-hero-actions"><a className="guide-primary" href="/?configure=agents"><Settings2 size={16} /> Configure agents for your task</a>
+          <a className="guide-secondary" href="/">Ask your documents <ArrowRight size={15} /></a></div>
+        {activeFlow && <p className="guide-active"><CheckCircle2 size={15} /> Currently selected in this tab: <strong>{activeFlow.name} · version {activeFlow.version}</strong></p>}
+      </section>
+
+      <section className="guide-section" aria-labelledby="default-flow-title">
+        <div className="guide-heading"><div><span className="eyebrow">STARTING CONFIGURATION</span><h2 id="default-flow-title">The default research workflow</h2></div>
+          <span className="guide-pill"><GitBranch size={14} /> {defaultFlow?.nodes.length || 5} connected nodes</span></div>
+        <p>Folio starts with three reasoning agents, one document-search tool, and an agent that requests missing evidence. These are the actual connections in the saved default workflow:</p>
+        {error && <p className="guide-error" role="alert">{error}</p>}
+        {!defaultFlow && !error && <p role="status">Loading the default configuration…</p>}
+        {defaultFlow && <div className="guide-flow">{defaultFlow.nodes.map((node, index) => {
+          const definition = types.find(item => item.type === node.type);
+          return <article className="guide-node" key={node.id}>
+            <div className="guide-node-head"><span className="guide-number">{index + 1}</span><div><small>{definition?.kind || "node"}</small><h3>{definition?.label || node.type}</h3></div></div>
+            <p>{explanations[node.type] || definition?.description}</p>
+            <div className="guide-edges">{Object.entries(node.transitions).length
+              ? Object.entries(node.transitions).map(([outcome, target]) => {
+                const next = defaultFlow.nodes.find(item => item.id === target);
+                return <span key={outcome}>{outcomeLabels[outcome] || outcome} <ArrowRight size={12} /> {label(next?.type || target)}</span>;
+              })
+              : <span>{node.type === "generate" ? "Cited answer" : "Request the missing evidence"}</span>}</div>
+          </article>;
+        })}</div>}
+      </section>
+
+      <section className="guide-section guide-two-column" aria-label="Default behavior and configuration">
+        <div className="guide-panel"><span className="eyebrow">WHAT HAPPENS BY DEFAULT</span><h2>Bounded research, with an evidence check</h2>
+          <ul>
+            <li>Planner: up to <strong>{String(setting("planner", "max_searches"))} searches</strong> per round.</li>
+            <li>Retriever: up to <strong>{String(setting("retrieve", "max_results_per_search"))} passages</strong> per search and <strong>{String(setting("retrieve", "max_evidence"))} unique passages</strong> overall.</li>
+            <li>Validator: up to <strong>{String(setting("validate", "max_rounds"))} rounds</strong>. If evidence is still incomplete in the final round, confidence must reach <strong>{Math.round(Number(setting("validate", "final_confidence")) * 100)}%</strong> to generate a partial answer.</li>
+            <li>The answer generator cites retrieved passages. If evidence is missing, the workflow asks for relevant documents.</li>
+          </ul>
+          <p className="guide-note"><BookOpen size={15} /> A citation points to a passage; it does not independently prove every claim is correct.</p>
+        </div>
+        <div className="guide-panel guide-customize"><span className="eyebrow">MAKE THE AGENTS YOURS</span><h2>Configure the workflow for your requirement</h2>
+          <ol>
+            <li>Open <strong>Configure agents</strong> and copy the default workflow.</li>
+            <li>Change an agent’s model or instructions, adjust search and evidence settings, or add registered agents and tools.</li>
+            <li>Connect each node’s outputs, choose the start node, and save. Saving activates that version for new questions in this browser tab.</li>
+          </ol>
+          <p>Earlier answers keep the workflow version that produced them. New agent and tool types registered on the server appear in the builder automatically.</p>
+          <a className="guide-primary" href="/?configure=agents"><Settings2 size={16} /> Configure agents</a>
+        </div>
+      </section>
+    </div>
+  </main>;
+}
