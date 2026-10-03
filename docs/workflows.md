@@ -3,17 +3,21 @@
 Folio executes the saved graph selected for each question. The server captures the
 workflow ID, version, and full definition before starting work, so editing a saved
 workflow cannot change an in-flight answer. The assistant message and operation
-snapshot record that version. Workflow definitions survive a restart in SQLite;
-uploaded documents and chats do not.
+snapshot record that version. Custom workflows are saved in SQLite under the current
+session ID. Other sessions cannot list, edit, delete, or run them. The built-in
+default template is available to every session. Because sessions live in memory,
+ending a session or restarting Python makes its saved workflows inaccessible, even
+though their database rows remain. Older shared custom workflows are retained but
+hidden because they cannot safely be assigned to a session.
 
 ## Build in the UI
 
-Open **Workflows** in the header. The catalog lists every registered agent and tool.
+Open **Configure agents** in the header. The catalog lists every registered agent and tool.
 Choose a saved workflow, or duplicate one to create a new version of the graph.
 Select a node card to edit its settings and choose a destination for every named
 output. Set the start node, name, and maximum number of node executions, then save.
 Saving activates the workflow for new questions in this browser tab. **Use selected**
-switches to an existing saved workflow without editing it.
+switches to an existing saved workflow in the same session without editing it.
 
 The default graph contains these types:
 
@@ -87,8 +91,10 @@ they run. The default workflow remains available if the extension is removed.
 
 ## API shape
 
-`GET /api/node-types` returns the catalog and JSON schemas. `GET /api/workflows`
-returns saved definitions. A new workflow is posted to `/api/workflows` as:
+`GET /api/node-types` returns the catalog and JSON schemas. Every workflow endpoint
+requires the current `X-Session-ID` header; `GET /api/workflows` returns only that
+session's saved definitions and the default template. A new workflow is posted to
+`/api/workflows` as:
 
 ```json
 {

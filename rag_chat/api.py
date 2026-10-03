@@ -123,6 +123,11 @@ def create_app(runtime_factory=Runtime, client_factory=None, frontend_dir: Path 
             raise HTTPException(400, "A session is required.")
         return value
 
+    def workflow_session(value):
+        session_id = identity(value)
+        manager().snapshot(session_id)
+        return session_id
+
     def spawn(coroutine):
         task = asyncio.create_task(coroutine)
         api.state.tasks.add(task)
@@ -141,24 +146,26 @@ def create_app(runtime_factory=Runtime, client_factory=None, frontend_dir: Path 
         return node_catalog()
 
     @api.get("/api/workflows")
-    def workflows():
-        return api.state.workflows.list()
+    def workflows(x_session_id: str | None = Header(default=None)):
+        return api.state.workflows.list(workflow_session(x_session_id))
 
     @api.get("/api/workflows/{workflow_id}")
-    def get_workflow(workflow_id: str):
-        return api.state.workflows.get(workflow_id)
+    def get_workflow(workflow_id: str, x_session_id: str | None = Header(default=None)):
+        return api.state.workflows.get(workflow_session(x_session_id), workflow_id)
 
     @api.post("/api/workflows", status_code=201)
-    def create_workflow(draft: WorkflowDraft):
-        return api.state.workflows.create(draft)
+    def create_workflow(draft: WorkflowDraft, x_session_id: str | None = Header(default=None)):
+        return api.state.workflows.create(workflow_session(x_session_id), draft)
 
     @api.put("/api/workflows/{workflow_id}")
-    def update_workflow(workflow_id: str, request: WorkflowUpdate):
-        return api.state.workflows.update(workflow_id, request.workflow, request.version)
+    def update_workflow(workflow_id: str, request: WorkflowUpdate,
+                        x_session_id: str | None = Header(default=None)):
+        return api.state.workflows.update(workflow_session(x_session_id), workflow_id,
+                                          request.workflow, request.version)
 
     @api.delete("/api/workflows/{workflow_id}", status_code=204)
-    def delete_workflow(workflow_id: str):
-        api.state.workflows.delete(workflow_id)
+    def delete_workflow(workflow_id: str, x_session_id: str | None = Header(default=None)):
+        api.state.workflows.delete(workflow_session(x_session_id), workflow_id)
 
     @api.post("/api/sessions", status_code=201)
     def create_session():
@@ -214,7 +221,7 @@ def create_app(runtime_factory=Runtime, client_factory=None, frontend_dir: Path 
     async def chat(body: ChatRequest, x_session_id: str | None = Header(default=None)):
         session_id = identity(x_session_id)
         snapshot = manager().snapshot(session_id)
-        workflow = api.state.workflows.get(body.workflow_id)
+        workflow = api.state.workflows.get(session_id, body.workflow_id)
         validate_workflow(workflow)
         if not configured():
             raise HTTPException(503, "Set GROQ_API_KEY in the backend .env and restart the API.")

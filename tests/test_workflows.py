@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -9,7 +10,7 @@ from conftest import completion
 from rag_chat.chat import Answer, ChatError, answer_question
 from rag_chat.indexing import ingest
 from rag_chat.workflows import (DEFAULT_WORKFLOW, NodeConfig, NodeType, WorkflowConflict,
-                                WorkflowDraft, WorkflowError, WorkflowNode, WorkflowStore,
+                                WorkflowDraft, WorkflowError, WorkflowNode, WorkflowNotFound, WorkflowStore,
                                 node_catalog, register_node, unregister_node, validate_workflow)
 
 
@@ -23,15 +24,38 @@ def configured_default(**validator_settings):
 def test_workflows_persist_and_reject_stale_updates(tmp_path):
     path = tmp_path / "workflows.sqlite3"
     first = WorkflowStore(path)
-    created = first.create(configured_default(max_rounds=1, final_confidence=0.9))
+    created = first.create("session-a", configured_default(max_rounds=1, final_confidence=0.9))
     assert created.version == 1
-    assert WorkflowStore(path).get(created.id).nodes[2].config == {"max_rounds": 1, "final_confidence": 0.9}
-    updated = first.update(created.id, configured_default(max_rounds=2), created.version)
+    assert WorkflowStore(path).get("session-a", created.id).nodes[2].config == {"max_rounds": 1, "final_confidence": 0.9}
+    assert [item.id for item in first.list("session-b")] == ["default"]
+    with pytest.raises(WorkflowNotFound):
+        first.get("session-b", created.id)
+    updated = first.update("session-a", created.id, configured_default(max_rounds=2), created.version)
     assert updated.version == 2
     with pytest.raises(WorkflowConflict):
-        first.update(created.id, configured_default(max_rounds=3), created.version)
-    first.delete(created.id)
-    assert [item.id for item in first.list()] == ["default"]
+        first.update("session-a", created.id, configured_default(max_rounds=3), created.version)
+    with pytest.raises(WorkflowNotFound):
+        first.update("session-b", created.id, configured_default(max_rounds=3), updated.version)
+    with pytest.raises(WorkflowNotFound):
+        first.delete("session-b", created.id)
+    first.delete("session-a", created.id)
+    assert [item.id for item in first.list("session-a")] == ["default"]
+
+
+def test_old_shared_workflows_are_hidden_after_schema_migration(tmp_path):
+    path = tmp_path / "workflows.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE workflows (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL,
+            body TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        db.execute("INSERT INTO workflows VALUES (?, ?, 1, ?, ?)",
+                   ("old-shared", "Old shared", DEFAULT_WORKFLOW.model_dump_json(), "2026-01-01"))
+    store = WorkflowStore(path)
+    assert [item.id for item in store.list("session-a")] == ["default"]
+    with pytest.raises(WorkflowNotFound):
+        store.get("session-a", "old-shared")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT session_id FROM workflows WHERE id = 'old-shared'").fetchone() == (None,)
 
 
 def test_graph_validation_rejects_broken_connections_and_missing_state():

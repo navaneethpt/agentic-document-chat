@@ -238,7 +238,7 @@ DEFAULT_WORKFLOW = WorkflowDraft(
 
 
 class WorkflowStore:
-    """SQLite storage shared across sessions and retained across process restarts."""
+    """SQLite storage for session-owned workflows and a shared default template."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -247,9 +247,14 @@ class WorkflowStore:
         with self._connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL,
-                body TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+                body TEXT NOT NULL, updated_at TEXT NOT NULL, session_id TEXT)""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(workflows)")}
+            if "session_id" not in columns:
+                # Old shared custom workflows cannot be assigned to a session safely.
+                db.execute("ALTER TABLE workflows ADD COLUMN session_id TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS workflows_session_id ON workflows(session_id)")
             if db.execute("SELECT 1 FROM workflows WHERE id = 'default'").fetchone() is None:
-                self._insert(db, "default", DEFAULT_WORKFLOW)
+                self._insert(db, "default", DEFAULT_WORKFLOW, None)
 
     @contextmanager
     def _connect(self):
@@ -261,9 +266,10 @@ class WorkflowStore:
             db.close()
 
     @staticmethod
-    def _insert(db, workflow_id: str, draft: WorkflowDraft) -> None:
-        db.execute("INSERT INTO workflows VALUES (?, ?, 1, ?, ?)", (
-            workflow_id, draft.name, draft.model_dump_json(), datetime.now(timezone.utc).isoformat(),
+    def _insert(db, workflow_id: str, draft: WorkflowDraft, session_id: str | None) -> None:
+        db.execute("""INSERT INTO workflows (id, name, version, body, updated_at, session_id)
+                      VALUES (?, ?, 1, ?, ?, ?)""", (
+            workflow_id, draft.name, draft.model_dump_json(), datetime.now(timezone.utc).isoformat(), session_id,
         ))
 
     @staticmethod
@@ -271,46 +277,52 @@ class WorkflowStore:
         body = json.loads(row[3])
         return SavedWorkflow(**body, id=row[0], version=row[2], updated_at=row[4])
 
-    def list(self) -> list[SavedWorkflow]:
+    def list(self, session_id: str) -> list[SavedWorkflow]:
         with self._connect() as db:
-            rows = db.execute("SELECT id, name, version, body, updated_at FROM workflows ORDER BY name, id").fetchall()
+            rows = db.execute("""SELECT id, name, version, body, updated_at FROM workflows
+                                 WHERE id = 'default' OR session_id = ? ORDER BY name, id""",
+                              (session_id,)).fetchall()
         return [self._saved(row) for row in rows]
 
-    def get(self, workflow_id: str) -> SavedWorkflow:
+    def get(self, session_id: str, workflow_id: str) -> SavedWorkflow:
         with self._connect() as db:
-            row = db.execute("SELECT id, name, version, body, updated_at FROM workflows WHERE id = ?",
-                             (workflow_id,)).fetchone()
+            row = db.execute("""SELECT id, name, version, body, updated_at FROM workflows
+                                WHERE id = ? AND (id = 'default' OR session_id = ?)""",
+                             (workflow_id, session_id)).fetchone()
         if row is None:
             raise WorkflowNotFound(workflow_id)
         return self._saved(row)
 
-    def create(self, draft: WorkflowDraft) -> SavedWorkflow:
+    def create(self, session_id: str, draft: WorkflowDraft) -> SavedWorkflow:
         validate_workflow(draft)
         identity = uuid4().hex
         with self._lock, self._connect() as db:
-            self._insert(db, identity, draft)
-        return self.get(identity)
+            self._insert(db, identity, draft, session_id)
+        return self.get(session_id, identity)
 
-    def update(self, workflow_id: str, draft: WorkflowDraft, version: int) -> SavedWorkflow:
+    def update(self, session_id: str, workflow_id: str, draft: WorkflowDraft, version: int) -> SavedWorkflow:
         if workflow_id == "default":
             raise WorkflowError("Copy the default workflow to create an editable version.")
         validate_workflow(draft)
         with self._lock, self._connect() as db:
-            current = db.execute("SELECT version FROM workflows WHERE id = ?", (workflow_id,)).fetchone()
+            current = db.execute("SELECT version FROM workflows WHERE id = ? AND session_id = ?",
+                                 (workflow_id, session_id)).fetchone()
             if current is None:
                 raise WorkflowNotFound(workflow_id)
             if current[0] != version:
                 raise WorkflowConflict("This workflow changed elsewhere. Reload it before saving.")
-            db.execute("UPDATE workflows SET name = ?, body = ?, version = ?, updated_at = ? WHERE id = ?", (
+            db.execute("""UPDATE workflows SET name = ?, body = ?, version = ?, updated_at = ?
+                          WHERE id = ? AND session_id = ?""", (
                 draft.name, draft.model_dump_json(), version + 1,
-                datetime.now(timezone.utc).isoformat(), workflow_id,
+                datetime.now(timezone.utc).isoformat(), workflow_id, session_id,
             ))
-        return self.get(workflow_id)
+        return self.get(session_id, workflow_id)
 
-    def delete(self, workflow_id: str) -> None:
+    def delete(self, session_id: str, workflow_id: str) -> None:
         if workflow_id == "default":
             raise WorkflowError("The default workflow cannot be deleted.")
         with self._lock, self._connect() as db:
-            deleted = db.execute("DELETE FROM workflows WHERE id = ?", (workflow_id,)).rowcount
+            deleted = db.execute("DELETE FROM workflows WHERE id = ? AND session_id = ?",
+                                 (workflow_id, session_id)).rowcount
         if not deleted:
             raise WorkflowNotFound(workflow_id)

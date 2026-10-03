@@ -143,6 +143,38 @@ test("workflow builder saves and activates settings used by research", async ({ 
   await expect(page.locator(".active-workflow")).toContainText("One pass research · v1");
 });
 
+test("saved workflows stay in the browser session that created them", async ({ page, browser }) => {
+  await page.goto("/");
+  await expect(page.getByLabel("Choose documents")).toBeEnabled();
+  await page.getByRole("button", { name: "Configure agents" }).first().click();
+  const builder = page.getByRole("dialog", { name: "Configure agents" });
+  await builder.getByRole("textbox", { name: "Workflow name" }).fill("Private research");
+  await builder.getByRole("button", { name: "Save new workflow and use" }).click();
+  await expect(builder).toContainText("Saved version 1");
+  await page.getByRole("button", { name: "Close workflow builder" }).click();
+
+  const otherContext = await browser.newContext();
+  try {
+    const other = await otherContext.newPage();
+    await other.goto("/agents/");
+    await expect(other.locator(".guide-node")).toHaveCount(5);
+    await other.goto("/");
+    await expect(other.getByLabel("Choose documents")).toBeEnabled();
+    await other.getByRole("button", { name: "Configure agents" }).first().click();
+    const otherBuilder = other.getByRole("dialog", { name: "Configure agents" });
+    await expect(otherBuilder.getByRole("option", { name: "Default research" })).toHaveCount(1);
+    await expect(otherBuilder.getByRole("option", { name: "Private research" })).toHaveCount(0);
+    await expect(other.locator(".active-workflow")).toContainText("Default research");
+  } finally { await otherContext.close(); }
+
+  page.on("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "Clear session" }).click();
+  await expect(page.locator(".active-workflow")).toContainText("Default research");
+  await page.getByRole("button", { name: "Configure agents" }).first().click();
+  await expect(page.getByRole("dialog", { name: "Configure agents" })
+    .getByRole("option", { name: "Private research" })).toHaveCount(0);
+});
+
 test("agent guide explains the default flow and opens configuration", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");

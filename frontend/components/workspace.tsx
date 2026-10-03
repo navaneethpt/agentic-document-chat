@@ -5,19 +5,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUp, BookOpen, Check, ChevronRight, FileText, FlaskConical, FolderOpen, Layers, LoaderCircle, Plus, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { api, ApiError, Message, research, Snapshot, Trace } from "../lib/api";
+import { forgetSession, getSession, WORKFLOW_KEY } from "../lib/session";
 import { SavedWorkflow } from "../lib/workflows";
 import WorkflowBuilder from "./workflow-builder";
-
-const SESSION_KEY = "folio-session";
-const WORKFLOW_KEY = "folio-workflow";
-let creating: Promise<string> | null = null;
-async function getSession() {
-  const saved = sessionStorage.getItem(SESSION_KEY);
-  if (saved) return saved;
-  if (!creating) creating = api<{ id: string }>("/sessions", undefined, { method: "POST" })
-    .then(({ id }) => { sessionStorage.setItem(SESSION_KEY, id); return id; }).finally(() => { creating = null; });
-  return creating;
-}
 const stageNames: Record<string, string> = { planner: "Planning searches", retrieve: "Searching documents", validate: "Checking evidence", generate: "Preparing answer", need_upload: "More evidence needed" };
 const completedNames: Record<string, string> = { planner: "Search plan ready", retrieve: "Retrieval complete", validate: "Evidence checked", generate: "Answer ready", need_upload: "More evidence needed", search: "Search complete" };
 function label(event: Trace) { return event.node ? stageNames[event.node] || event.node : completedNames[event.event] || event.event; }
@@ -63,7 +53,8 @@ export default function Workspace() {
 
   const handleError = useCallback((reason: unknown) => {
     if (reason instanceof ApiError && reason.status === 410) {
-      sessionStorage.removeItem(SESSION_KEY); setExpired(true); setSnapshot(undefined);
+      forgetSession(); setSession(undefined); setActiveWorkflow(undefined); setWorkflowBuilderOpen(false);
+      setExpired(true); setSnapshot(undefined);
       setEvents([]); setPending(""); setSelected(undefined); setFiles([]); setUploads([]);
     }
     setError(reason instanceof Error ? reason.message : "Connection unavailable. Please retry.");
@@ -85,14 +76,15 @@ export default function Workspace() {
   const initialize = useCallback(async () => {
     setLoading(true); setError("");
     try {
+      const id = await getSession();
       const [health, workflows] = await Promise.all([
-        api<{ answering_configured: boolean }>("/health"), api<SavedWorkflow[]>("/workflows"),
+        api<{ answering_configured: boolean }>("/health"), api<SavedWorkflow[]>("/workflows", id),
       ]);
       setConfigured(health.answering_configured);
       const chosen = workflows.find(item => item.id === sessionStorage.getItem(WORKFLOW_KEY))
         || workflows.find(item => item.id === "default");
       setActiveWorkflow(chosen);
-      const id = await getSession(); setSession(id);
+      setSession(id);
       const state = await refresh(id, true);
       setSelected(state.messages.filter(m => m.role === "assistant").at(-1)?.id);
     } catch (reason) { handleError(reason); }
@@ -123,11 +115,11 @@ export default function Workspace() {
 
   async function reset() {
     if (busy) return;
-    if (!expired && snapshot && !window.confirm("Clear all documents and this conversation?")) return;
+    if (!expired && snapshot && !window.confirm("Start a new session? This ends access to its documents, conversation, and saved workflows.")) return;
     setLocalBusy(true);
     try {
       if (!expired && session && snapshot) await api("/session", session, { method: "DELETE" });
-      sessionStorage.removeItem(SESSION_KEY);
+      forgetSession(); setActiveWorkflow(undefined);
       setSnapshot(undefined); setExpired(false); setEvents([]); setSelected(undefined);
       setSourceNumber(undefined); setQuestion(""); setPending(""); setUploads([]); setFiles([]);
       await initialize();
@@ -234,7 +226,7 @@ export default function Workspace() {
       <div className="composer-area"><form className="composer" onSubmit={event => { event.preventDefault(); void send(); }}><textarea aria-label="Ask about your documents" placeholder="What would you like to understand?" rows={2} maxLength={2000} value={question} disabled={busy || expired} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (configured && snapshot?.healthy && snapshot.documents.length) void send(); } }} /><div className="composer-bottom"><span><FileText size={13} />{snapshot?.documents.length || 0} documents in context</span><button className="send-button" aria-label="Send question" disabled={busy || !question.trim() || !configured || !snapshot?.healthy || !snapshot.documents.length || expired}><ArrowUp size={18} /></button></div></form><p>Answers are based on your documents. Check sources for important decisions.</p></div>
     </main><aside className="right-panel">{evidence}</aside>
     <dialog ref={dialog} className="drawer" aria-label={drawer === "documents" ? "Documents" : "Evidence"} onCancel={() => setDrawer(null)} onClick={event => { if (event.target === event.currentTarget) setDrawer(null); }}>{drawer && <div className="drawer-inner"><button className="drawer-close icon-button" aria-label="Close panel" onClick={() => setDrawer(null)}><X /></button>{drawer === "documents" ? documents : evidence}</div>}</dialog>
-    <WorkflowBuilder open={workflowBuilderOpen} activeId={activeWorkflow?.id || "default"}
+    <WorkflowBuilder open={workflowBuilderOpen} session={session} activeId={activeWorkflow?.id || "default"}
       onClose={() => setWorkflowBuilderOpen(false)} onActivate={saved => {
         setActiveWorkflow(saved); sessionStorage.setItem(WORKFLOW_KEY, saved.id);
       }} />

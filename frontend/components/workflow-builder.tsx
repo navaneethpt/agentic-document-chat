@@ -7,6 +7,7 @@ import { ConfigProperty, copyDraft, NodeType, SavedWorkflow, WorkflowDraft, Work
 
 type Props = {
   open: boolean;
+  session?: string;
   activeId: string;
   onClose: () => void;
   onActivate: (workflow: SavedWorkflow) => void;
@@ -16,7 +17,7 @@ function detail(error: unknown) {
   return error instanceof Error ? error.message : "The workflow could not be saved.";
 }
 
-export default function WorkflowBuilder({ open, activeId, onClose, onActivate }: Props) {
+export default function WorkflowBuilder({ open, session, activeId, onClose, onActivate }: Props) {
   const [catalog, setCatalog] = useState<NodeType[]>([]);
   const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
   const [draft, setDraft] = useState<WorkflowDraft>();
@@ -30,10 +31,10 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !session) return;
     let cancelled = false;
     setBusy(true); setError(""); setNotice("");
-    Promise.all([api<NodeType[]>("/node-types"), api<SavedWorkflow[]>("/workflows")])
+    Promise.all([api<NodeType[]>("/node-types"), api<SavedWorkflow[]>("/workflows", session)])
       .then(([types, saved]) => {
         if (cancelled) return;
         setCatalog(types); setWorkflows(saved);
@@ -45,7 +46,7 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
     return () => { cancelled = true; };
   // Saving activates the workflow while this dialog is open. Keep the edited
   // draft and confirmation visible; refresh from the server on the next open.
-  }, [open]);
+  }, [open, session]);
 
   function load(workflow: SavedWorkflow) {
     setDraft(copyDraft(workflow));
@@ -100,15 +101,15 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
   }
 
   async function save() {
-    if (!draft) return;
+    if (!draft || !session) return;
     setBusy(true); setError(""); setNotice("");
     try {
       const saved = editingId
-        ? await api<SavedWorkflow>(`/workflows/${editingId}`, undefined, {
+        ? await api<SavedWorkflow>(`/workflows/${editingId}`, session, {
           method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ workflow: draft, version }),
         })
-        : await api<SavedWorkflow>("/workflows", undefined, {
+        : await api<SavedWorkflow>("/workflows", session, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft),
         });
       setWorkflows(current => [...current.filter(item => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
@@ -120,10 +121,10 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
   }
 
   async function removeWorkflow() {
-    if (!editingId || busy || !window.confirm("Delete this saved workflow?")) return;
+    if (!session || !editingId || busy || !window.confirm("Delete this saved workflow?")) return;
     setBusy(true); setError("");
     try {
-      await api(`/workflows/${editingId}`, undefined, { method: "DELETE" });
+      await api(`/workflows/${editingId}`, session, { method: "DELETE" });
       const remaining = workflows.filter(item => item.id !== editingId);
       setWorkflows(remaining);
       const fallback = remaining.find(item => item.id === "default");
@@ -171,7 +172,7 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
       {notice && <div className="workflow-notice" role="status">{notice}</div>}
       <div className="workflow-body">
         <aside className="workflow-sidebar">
-          <label className="workflow-field"><span>Saved workflow</span>
+          <label className="workflow-field"><span>This session’s workflows</span>
             <select aria-label="Saved workflow" value={selectedId} onChange={event => {
               const saved = workflows.find(item => item.id === event.target.value); if (saved) load(saved);
             }}>{workflows.map(item => <option key={item.id} value={item.id}>{item.name}{item.id === activeId ? " · active" : ""}</option>)}</select>
@@ -181,7 +182,7 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
             <button onClick={removeWorkflow} disabled={!editingId || busy}><Trash2 size={14} /> Delete</button>
           </div>
           <h3>Available nodes</h3>
-          <p>Registered server nodes appear here automatically.</p>
+          <p>Registered server nodes appear here automatically. Saved workflows are visible only in this session.</p>
           <div className="workflow-palette">{catalog.map(item => <button key={item.type}
             onClick={() => { setAddType(item.type); }} className={addType === item.type ? "selected" : ""}>
               <small>{item.kind}</small><strong>{item.label}</strong><span>{item.description}</span>
@@ -232,7 +233,7 @@ export default function WorkflowBuilder({ open, activeId, onClose, onActivate }:
       <footer className="workflow-footer"><span>{draft?.nodes.length || 0} nodes · {catalog.length} available types{isDirty ? " · unsaved edits" : ""}</span>
         <div><button className="workflow-secondary" disabled={busy || !draft || selectedId === activeId}
           onClick={() => { const saved = workflows.find(item => item.id === selectedId); if (saved) { onActivate(saved); setNotice("New questions will use this workflow."); } }}>Use selected</button>
-          <button className="workflow-save" disabled={busy || !draft} onClick={save}><Save size={15} /> {editingId ? "Save changes and use" : "Save new workflow and use"}</button></div>
+          <button className="workflow-save" disabled={busy || !draft || !session} onClick={save}><Save size={15} /> {editingId ? "Save changes and use" : "Save new workflow and use"}</button></div>
       </footer>
     </section>
   </div>;

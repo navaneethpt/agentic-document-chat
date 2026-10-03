@@ -226,7 +226,7 @@ def test_saved_workflow_settings_control_chat_execution(api_client):
     draft = DEFAULT_WORKFLOW.model_copy(deep=True)
     draft.name = "One pass research"
     draft.nodes[2].config = {"max_rounds": 1, "final_confidence": 0.9}
-    saved = client.post("/api/workflows", json=draft.model_dump())
+    saved = client.post("/api/workflows", headers=headers, json=draft.model_dump())
     assert saved.status_code == 201
     workflow = saved.json()
     assert workflow["version"] == 1
@@ -244,9 +244,10 @@ def test_saved_workflow_settings_control_chat_execution(api_client):
     assert state["operation"]["workflow"] == {"id": workflow["id"], "name": workflow["name"], "version": 1}
 
     draft.nodes[2].config["final_confidence"] = 0.5
-    updated = client.put(f"/api/workflows/{workflow['id']}", json={"workflow": draft.model_dump(), "version": 1})
+    updated = client.put(f"/api/workflows/{workflow['id']}", headers=headers,
+                         json={"workflow": draft.model_dump(), "version": 1})
     assert updated.status_code == 200 and updated.json()["version"] == 2
-    assert client.put(f"/api/workflows/{workflow['id']}",
+    assert client.put(f"/api/workflows/{workflow['id']}", headers=headers,
                       json={"workflow": draft.model_dump(), "version": 1}).status_code == 409
     model.chat.completions.create.side_effect = [
         completion(json.dumps({"searches": [{"query": "launch", "purpose": "Find launch."}]})),
@@ -260,3 +261,32 @@ def test_saved_workflow_settings_control_chat_execution(api_client):
     assert client.get("/api/session", headers=headers).json()["operation"]["workflow"]["version"] == 2
     assert client.post("/api/chat", headers=headers,
                        json={"question": "When?", "workflow_id": "unknown"}).status_code == 404
+
+
+def test_saved_workflows_are_visible_and_mutable_only_in_their_session(api_client):
+    client, _, _ = api_client
+    first = setup_session(client)
+    second = setup_session(client)
+    draft = DEFAULT_WORKFLOW.model_copy(deep=True)
+    draft.name = "Private research"
+    created = client.post("/api/workflows", headers=first, json=draft.model_dump())
+    assert created.status_code == 201
+    workflow_id = created.json()["id"]
+    url = f"/api/workflows/{workflow_id}"
+
+    assert {item["id"] for item in client.get("/api/workflows", headers=first).json()} == {"default", workflow_id}
+    assert [item["id"] for item in client.get("/api/workflows", headers=second).json()] == ["default"]
+    assert client.get("/api/workflows/default", headers=second).status_code == 200
+    assert client.get(url, headers=second).status_code == 404
+    assert client.put(url, headers=second,
+                      json={"workflow": draft.model_dump(), "version": 1}).status_code == 404
+    assert client.delete(url, headers=second).status_code == 404
+    assert client.post("/api/chat", headers=second,
+                       json={"question": "When?", "workflow_id": workflow_id}).status_code == 404
+    assert client.get(url, headers=first).status_code == 200
+
+    assert client.get("/api/workflows").status_code == 400
+    assert client.post("/api/workflows", json=draft.model_dump()).status_code == 400
+    assert client.get("/api/workflows", headers={"X-Session-ID": "unknown"}).status_code == 410
+    assert client.delete("/api/session", headers=first).status_code == 204
+    assert client.get(url, headers=first).status_code == 410

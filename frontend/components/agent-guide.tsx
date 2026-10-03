@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, BookOpen, CheckCircle2, GitBranch, Layers, Settings2 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
+import { forgetSession, getSession, WORKFLOW_KEY } from "../lib/session";
 import { NodeType, SavedWorkflow } from "../lib/workflows";
 
 const explanations: Record<string, string> = {
@@ -25,18 +26,28 @@ export default function AgentGuide() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api<NodeType[]>("/node-types"), api<SavedWorkflow>("/workflows/default")])
-      .then(async ([catalog, workflow]) => {
-        if (cancelled) return;
-        setTypes(catalog); setDefaultFlow(workflow);
-        const activeId = sessionStorage.getItem("folio-workflow");
-        if (activeId && activeId !== "default") {
-          try {
-            const active = await api<SavedWorkflow>(`/workflows/${activeId}`);
-            if (!cancelled) setActiveFlow(active);
-          } catch { if (!cancelled) setActiveFlow(workflow); }
-        } else setActiveFlow(workflow);
-      })
+    async function load(session: string) {
+      const [catalog, workflow] = await Promise.all([
+        api<NodeType[]>("/node-types"), api<SavedWorkflow>("/workflows/default", session),
+      ]);
+      if (cancelled) return;
+      setTypes(catalog); setDefaultFlow(workflow);
+      const activeId = sessionStorage.getItem(WORKFLOW_KEY);
+      if (activeId && activeId !== "default") {
+        try {
+          const active = await api<SavedWorkflow>(`/workflows/${activeId}`, session);
+          if (!cancelled) setActiveFlow(active);
+        } catch { if (!cancelled) { sessionStorage.removeItem(WORKFLOW_KEY); setActiveFlow(workflow); } }
+      } else setActiveFlow(workflow);
+    }
+    getSession().then(async session => {
+      try { await load(session); }
+      catch (reason) {
+        if (!(reason instanceof ApiError) || reason.status !== 410) throw reason;
+        forgetSession();
+        await load(await getSession());
+      }
+    })
       .catch(reason => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load the agent configuration."); });
     return () => { cancelled = true; };
   }, []);
@@ -54,7 +65,7 @@ export default function AgentGuide() {
     <div className="guide-content">
       <section className="guide-hero"><span className="eyebrow">CONFIGURABLE DOCUMENT RESEARCH</span>
         <h1>How Folio’s agents work together</h1>
-        <p>Your documents become a temporary searchable library. A saved workflow then decides which agents and tools run, how they connect, and when there is enough evidence to answer.</p>
+        <p>Your documents become a temporary searchable library. A workflow saved in this session decides which agents and tools run, how they connect, and when there is enough evidence to answer.</p>
         <div className="guide-hero-actions"><a className="guide-primary" href="/?configure=agents"><Settings2 size={16} /> Configure agents for your task</a>
           <a className="guide-secondary" href="/">Ask your documents <ArrowRight size={15} /></a></div>
         {activeFlow && <p className="guide-active"><CheckCircle2 size={15} /> Currently selected in this tab: <strong>{activeFlow.name} · version {activeFlow.version}</strong></p>}
@@ -97,7 +108,7 @@ export default function AgentGuide() {
             <li>Change an agent’s model or instructions, adjust search and evidence settings, or add registered agents and tools.</li>
             <li>Connect each node’s outputs, choose the start node, and save. Saving activates that version for new questions in this browser tab.</li>
           </ol>
-          <p>Earlier answers keep the workflow version that produced them. New agent and tool types registered on the server appear in the builder automatically.</p>
+          <p>Saved workflows are visible only in this session. Earlier answers keep the workflow version that produced them. New agent and tool types registered on the server appear in the builder automatically.</p>
           <a className="guide-primary" href="/?configure=agents"><Settings2 size={16} /> Configure agents</a>
         </div>
       </section>

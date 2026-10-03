@@ -37,8 +37,12 @@ built, FastAPI starts API-only and the root page returns 404. Shell environment
 values override `.env`.
 
 Use one API worker: multiple workers do not share this POC's in-memory libraries.
-Restarting Python clears documents, chats, and operation history. Saved workflows
-remain in `.data/workflows.sqlite3` (or the path in `FOLIO_WORKFLOWS_DB`).
+Saved workflows belong to the current session ID, so another session cannot list,
+edit, delete, or run them. Restarting Python clears sessions, documents, chats, and
+operation history, making their workflows inaccessible. The workflow rows remain in
+`.data/workflows.sqlite3` (or the path in `FOLIO_WORKFLOWS_DB`). Existing shared
+custom workflows from older database versions are retained there but hidden from
+sessions because they have no owner.
 
 ## Use the workspace
 
