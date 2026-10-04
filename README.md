@@ -44,6 +44,35 @@ operation history, making their workflows inaccessible. The workflow rows remain
 custom workflows from older database versions are retained there but hidden from
 sessions because they have no owner.
 
+## Deploy on Render
+
+The root `Dockerfile` builds the static Next.js workspace and serves it with FastAPI
+in one Docker Web Service. Push this repository to GitHub, then in Render choose
+**New → Web Service** and connect `navaneethpt/agentic-document-chat` on `main`.
+Use these settings:
+
+| Setting | Value |
+|---|---|
+| Language | Docker |
+| Root Directory | Leave blank (repository root) |
+| Dockerfile Path | `./Dockerfile` (the default) |
+| Health Check Path | `/api/health` |
+| Instances | One; session libraries live in process memory |
+
+In **Environment**, add `GROQ_API_KEY` as a secret value. Do not add the key to the
+Dockerfile or commit `.env`. Render supplies `PORT`; the Docker command listens on
+`0.0.0.0:$PORT` with one worker. After deployment, open the service URL and check
+`/api/health` for `"answering_configured": true` before uploading a small document
+and asking a question. The first upload downloads the embedding model, so it can
+take longer than later uploads. If the service runs out of memory, choose a plan
+with more RAM.
+
+This is a temporary-session POC. A restart or Free-plan spin-down discards document
+libraries and session IDs. Saved workflows are then inaccessible even if their
+SQLite file remains on a persistent disk; a disk alone does not make sessions
+recoverable. Public Web Services also expose the upload and chat endpoints to
+anyone with the URL, which can consume the configured Groq API key.
+
 ## Use the workspace
 
 1. Choose or drop PDF, DOCX, TXT, or Markdown files and select **Process documents**.
